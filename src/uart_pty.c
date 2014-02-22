@@ -116,11 +116,15 @@ uart_pty_thread(void *param)
 {
 	uart_pty_t *p = (uart_pty_t*)param;
     int ret;
+    sigset_t set;
 
     /* Setup our poll info. We'll always be checking the tty */
     struct pollfd pfd = {
         .fd = p->port.s,
     };
+
+    sigfillset(&set);
+    sigprocmask(SIG_SETMASK, &set, NULL);
 
 	while (1) {
         /* Reset the events we care about to just HUP */
@@ -264,6 +268,7 @@ uart_pty_stop(uart_pty_t *p)
 {
 	void *ret;
     char link[1024];
+    int join_status;
 
     fprintf(stderr, "Shutting down UART%c\n", p->uart);
 
@@ -278,9 +283,9 @@ uart_pty_stop(uart_pty_t *p)
         p->port.s = -1;
     }
 
-	if (pthread_join(p->thread, &ret)) {
+	if ((join_status = pthread_join(p->thread, &ret))) {
         fprintf(stderr, "Shutting down UART%c failed: %s\n",
-                p->uart, strerror(errno));
+                p->uart, strerror(join_status));
     }
 }
 
