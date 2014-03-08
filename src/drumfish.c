@@ -111,7 +111,7 @@ main(int argc, char *argv[])
     config.gdb = 0;
     config.erase_pflash = 0;
 
-    while ((opt = getopt(argc, argv, "ef:p:m:vgh")) != -1) {
+    while ((opt = getopt(argc, argv, "ef:p:m:vg:h")) != -1) {
         switch (opt) {
             case 'e':
                 config.erase_pflash = 1;
