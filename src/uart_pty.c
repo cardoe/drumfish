@@ -152,7 +152,7 @@ uart_pty_thread(void *param)
 		}
 
         /* Something short but not too short */
-        ret = poll(&pfd, 1, 500);
+        ret = poll(&pfd, 1, 1);
 
 		if (!ret)
 			continue;
@@ -177,11 +177,11 @@ uart_pty_thread(void *param)
         // write them in fifo
         while (p->port.buffer_done < p->port.buffer_len &&
                 !uart_pty_fifo_isfull(&p->port.out)) {
-            int index = p->port.buffer_done++;
-            uart_pty_fifo_write(&p->port.out, p->port.buffer[index]);
+            int idx = p->port.buffer_done++;
+            uart_pty_fifo_write(&p->port.out, p->port.buffer[idx]);
 
             df_log_msg(DF_LOG_DEBUG, "w %3d:%02x\n", p->port.out.write,
-                    p->port.buffer[index]);
+                    p->port.buffer[idx]);
         }
 
         /* Can we write data to the TTY */
