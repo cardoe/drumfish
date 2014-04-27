@@ -3,6 +3,9 @@ bin_PROGRAMS =
 
 simavr_LIBS = $(shell pwd)/../simavr/simavr/obj-${shell $(CC) -dumpmachine}
 
+EVENT_CFLAGS = $(shell pkg-config --cflags libevent)
+EVENT_LIBS = $(shell pkg-config --libs libevent)
+
 BUILD_CFLAGS = -std=gnu99 -g \
   -Wall -Wextra -W \
   -Wbad-function-cast \
@@ -19,6 +22,7 @@ BUILD_CFLAGS = -std=gnu99 -g \
   -Wcast-qual -Wdisabled-optimization \
   -Wwrite-strings -Wmissing-format-attribute
 BUILD_CFLAGS += -I../simavr/simavr/sim/
+BUILD_CFLAGS += $(EVENT_CFLAGS)
 BUILD_CFLAGS += $(CFLAGS)
 
 # Rules to build drumfish
@@ -26,7 +30,7 @@ bin_PROGRAMS += drumfish
 drumfish_SOURCES = drumfish.c flash.c m128rfa1.c uart_pty.c df_log.c
 drumfish_OBJS = $(drumfish_SOURCES:.c=.o)
 drumfish_LDFLAGS = $(LDFLAGS)
-drumfish_LDADD = -L$(simavr_LIBS) -lsimavr -lelf
+drumfish_LDADD = -L$(simavr_LIBS) $(EVENT_LIBS) -lsimavr -lelf
 drumfish_LDADD += -pthread -lutil $(LDADD)
 
 # Very basic quiet rules

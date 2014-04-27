@@ -31,6 +31,8 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <event2/event.h>
+
 #include <sim_avr.h>
 #include <sim_gdb.h>
 
@@ -169,7 +171,9 @@ main(int argc, char *argv[])
     int opt;
     char **flash_file = NULL;
     size_t flash_file_len = 0;
-    long  port;
+    long port;
+    struct event_config *ev_config;
+    struct event_base *ev_base;
 
     config.mac = NULL;
     config.pflash = NULL;
@@ -305,6 +309,38 @@ main(int argc, char *argv[])
         exit(EXIT_FAILURE);
     }
 
+    /* Setup libevent */
+    ev_config = event_config_new();
+    if (!ev_config) {
+        fprintf(stderr, "Failed to configure libevent %s.\n",
+                event_get_version());
+        exit(EXIT_FAILURE);
+    }
+    /* We need edge-triggered interrupts for socket shutdown to
+     * detect when UARTs are disconnected. Otherwise the UART will
+     * always be firing a HUP event when its disconnected.
+     */
+    event_config_require_features(ev_config, EV_FEATURE_ET);
+
+    /* We don't dup() any of our sockets so this is safe until we do */
+    event_config_set_flag(ev_config, EVENT_BASE_FLAG_EPOLL_USE_CHANGELIST);
+
+    /* Get our event base */
+    ev_base = event_base_new_with_config(ev_config);
+    event_config_free(ev_config);
+    if (!ev_base) {
+        const char **methods = event_get_supported_methods();
+
+        fprintf(stderr, "Failed to get a workable libevent backend.\n");
+        fprintf(stderr, "libevent %s. Supported backends are:\n",
+                event_get_version());
+        for (int i = 0; methods[i] != NULL; i++) {
+            fprintf(stderr, "  %s\n", methods[i]);
+        }
+
+        exit(EXIT_FAILURE);
+    }
+
     avr = m128rfa1_create(&config);
     if (!avr) {
         fprintf(stderr, "Unable to initialize requested board.\n");
@@ -343,6 +379,9 @@ main(int argc, char *argv[])
         avr_gdb_init(avr);
     }
 
+    df_log_msg(DF_LOG_DEBUG, "libevent %s. Backend: %s\n", event_get_version(),
+            event_base_get_method(ev_base));
+
     /* Capture the current time to be used as when our CPU started */
     df_log_start_time();
 
@@ -353,9 +392,13 @@ main(int argc, char *argv[])
         state = avr_run(avr);
         if (state == cpu_Done || state == cpu_Crashed)
             break;
+
+        event_base_loop(ev_base, EVLOOP_ONCE|EVLOOP_NONBLOCK);
     }
 
     avr_terminate(avr);
+
+    event_base_free(ev_base);
 
     free(config.pflash);
 }
