@@ -31,7 +31,7 @@ drumfish_SOURCES = drumfish.c flash.c m128rfa1.c uart_pty.c df_log.c
 drumfish_OBJS = $(drumfish_SOURCES:.c=.o)
 drumfish_LDFLAGS = $(LDFLAGS)
 drumfish_LDADD = -L$(simavr_LIBS) $(EVENT_LIBS) -lsimavr -lelf
-drumfish_LDADD += -pthread -lutil $(LDADD)
+drumfish_LDADD += -lutil $(LDADD)
 
 # Very basic quiet rules
 ifneq ($(V),)

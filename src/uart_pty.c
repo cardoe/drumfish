@@ -24,7 +24,6 @@
 #include <sys/types.h>
 #include <stdlib.h>
 #include <poll.h>
-#include <pthread.h>
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
@@ -36,13 +35,22 @@
 #include <pty.h>
 #endif
 
+#include <event2/event.h>
+#include <event2/bufferevent.h>
+#include <event2/buffer.h>
+#include <event2/util.h>
+
 #include "uart_pty.h"
 #include "avr_uart.h"
 #include "sim_hex.h"
 
 #include "df_log.h"
 
-DEFINE_FIFO(uint8_t, uart_pty_fifo);
+static struct event_base *dummy_base = NULL;
+
+void uart_read_cb(struct bufferevent *bev, void *arg);
+void uart_error_cb(struct bufferevent *bev, short events, void *arg);
+void uart_connected_cb(evutil_socket_t sock, short events, void *arg);
 
 #define TRACE(_w) _w
 #ifndef TRACE
@@ -65,24 +73,12 @@ uart_pty_in_hook(
 {
     (void)irq;
 
-    uart_pty_t *p = (uart_pty_t*)param;
+    uart_pty_t *p = (uart_pty_t *)param;
     df_log_msg(DF_LOG_DEBUG, "AVR UART%c -> out fifo (towards pty) %02x\n",
             p->uart, value);
-    uart_pty_fifo_write(&p->port.in, value);
-}
-
-// try to empty our fifo, the uart_pty_xoff_hook() will be called when
-// other side is full
-static void
-uart_pty_flush_incoming(uart_pty_t *p)
-{
-    uint8_t byte;
-
-    while (p->xon && !uart_pty_fifo_isempty(&p->port.out)) {
-        byte = uart_pty_fifo_read(&p->port.out);
-        df_log_msg(DF_LOG_DEBUG, "uart_pty_flush_incoming send r %03d:%02x\n",
-                p->port.out.read, byte);
-        avr_raise_irq(p->irq + IRQ_UART_PTY_BYTE_OUT, byte);
+    if (bufferevent_write(p->bev, (uint8_t *)&value, 1)) {
+        df_log_msg(DF_LOG_ERR, "AVR UART%c -> out fifo failed to write\n",
+                p->uart);
     }
 }
 
@@ -101,8 +97,12 @@ uart_pty_xon_hook(struct avr_irq_t *irq, uint32_t value, void *param)
     if (!p->xon)
         df_log_msg(DF_LOG_INFO, "UART%c xon\n", p->uart);
 
+    /* Re-enable reads from the TTY to result in writes to the MCU */
     p->xon = 1;
-    uart_pty_flush_incoming(p);
+    bufferevent_enable(p->bev, EV_READ);
+
+    if (p->peer_connected)
+        uart_read_cb(p->bev, p);
 }
 
 /*
@@ -120,90 +120,108 @@ uart_pty_xoff_hook(struct avr_irq_t *irq, uint32_t value, void *param)
         df_log_msg(DF_LOG_INFO, "UART%c xoff\n", p->uart);
 
     p->xon = 0;
+    bufferevent_disable(p->bev, EV_READ);
 }
 
-static void *
-uart_pty_thread(void *param)
+void
+uart_read_cb(struct bufferevent *bev, void *arg)
 {
-	uart_pty_t *p = (uart_pty_t*)param;
-    int ret;
-    sigset_t set;
+    int err;
+    uint8_t buf[1]; /* specificially 1 byte here since a UART is byte by byte */
+    struct evbuffer *input;
+	uart_pty_t *p = (uart_pty_t *)arg;
 
-    /* Setup our poll info. We'll always be checking the tty */
-    struct pollfd pfd = {
-        .fd = p->port.s,
-    };
+    /* If we were previously unconnected, we are connected now since we got
+     * a successful read. We want to stop our connection check timer from
+     * firing.
+     */
+    if (!p->peer_connected) {
+        event_del(p->timer);
 
-    sigfillset(&set);
-    sigprocmask(SIG_SETMASK, &set, NULL);
+        /* Mark this connection as connected */
+        p->peer_connected = 1;
+    }
 
-	while (1) {
-        /* Reset the events we care about to just HUP */
-        pfd.events = POLLHUP;
+    /* Get the right evbuffer for incoming data */
+    input = bufferevent_get_input(bev);
 
-        // read more only if buffer was empty
-        if (p->port.buffer_len == p->port.buffer_done) {
-            /* listen for if there's data to read */
-            pfd.events |= POLLIN;
-        }
-
-        /* If we have data in our outbound fifo, check that we can write */
-        if (!uart_pty_fifo_isempty(&p->port.in)) {
-            pfd.events |= POLLOUT;
-		}
-
-        /* Something short but not too short */
-        ret = poll(&pfd, 1, 1);
-
-		if (!ret)
-			continue;
-		if (ret < 0)
-			break;
-
-        /* If no one is connected to the UART, we don't want to
-         * cache data.
-         */
-        if (pfd.revents & POLLHUP) {
-            uart_pty_fifo_read(&p->port.in);
-        }
-
-        if (pfd.revents & POLLIN) {
-            ssize_t r = read(p->port.s, p->port.buffer,
-                    sizeof(p->port.buffer) - 1);
-            p->port.buffer_len = r;
-            p->port.buffer_done = 0;
-            TRACE(hdump("pty recv", p->port.buffer, r);)
-        }
-
-        // write them in fifo
-        while (p->port.buffer_done < p->port.buffer_len &&
-                !uart_pty_fifo_isfull(&p->port.out)) {
-            int idx = p->port.buffer_done++;
-            uart_pty_fifo_write(&p->port.out, p->port.buffer[idx]);
-
-            df_log_msg(DF_LOG_DEBUG, "w %3d:%02x\n", p->port.out.write,
-                    p->port.buffer[idx]);
-        }
-
-        /* Can we write data to the TTY */
-        if (pfd.revents & POLLOUT) {
-            uint8_t buffer[512];
-            // write them in fifo
-            uint8_t *dst = buffer;
-            while (!uart_pty_fifo_isempty(&p->port.in) &&
-                    dst < (buffer + sizeof(buffer)))
-                *dst++ = uart_pty_fifo_read(&p->port.in);
-            size_t len = dst - buffer;
-            TRACE(size_t r =) write(p->port.s, buffer, len);
-            TRACE(hdump("pty send", buffer, r);)
-		}
-		/* DO NOT call this, this create a concurency issue with the
-		 * FIFO that can't be solved cleanly with a memory barrier
-			uart_pty_flush_incoming(p);
-		  */
-	}
-	return NULL;
+    /* While xon is still set by the MCU, remove a byte and toss it at
+     * the MCU. The reason we don't just disable the EV_READ event and use
+     * this extra bit is so that if this event fired with 5 bytes but the
+     * MCU only had room for 1. We'll process off the 1 byte and then
+     * stop reading and leave the other bytes queued up.
+     */
+    while (p->xon && (err = evbuffer_remove(input, buf, sizeof(buf))) > 0) {
+        df_log_msg(DF_LOG_DEBUG, "uart_pty_flush_incoming send %02x\n", buf[0]);
+        avr_raise_irq(p->irq + IRQ_UART_PTY_BYTE_OUT, buf[0]);
+    }
 }
+
+void
+uart_error_cb(struct bufferevent *bev, short events, void *arg)
+{
+    uart_pty_t *p = (uart_pty_t *)arg;
+    struct timeval tv;
+
+    /* When no one is connected to our TTY, libevent returns back
+     * BEV_EVENT_READING | BEV_EVENT_ERROR
+     */
+    if (events == (BEV_EVENT_READING | BEV_EVENT_ERROR)) {
+
+        /* If we were previously connected, we need to requeue the
+         * connection check timer.
+         */
+        if (p->peer_connected) {
+            /* Schedule another epoll() on this socket to check for connection
+             * in 4 seconds
+             */
+            tv.tv_sec = 4;
+            tv.tv_usec = 0;
+
+            if (event_add(p->timer, &tv)) {
+                fprintf(stderr, "Failed to requeue timer object for UART%c\n",
+                        p->uart);
+                return;
+            }
+
+            /* Note that the peer is not connected */
+            p->peer_connected = 0;
+        }
+
+        /* move the socket into a dummy base so that it's not part of
+         * our epoll() check (done by libevent) which would cause an
+         * instant return from epoll().
+         */
+        bufferevent_base_set(dummy_base, p->bev);
+
+        df_log_msg(DF_LOG_DEBUG, "UART%c: not connected.\n", p->uart);
+        return;
+    }
+
+    df_log_msg(DF_LOG_DEBUG, "UART%c: error\n", p->uart);
+}
+
+/**
+ * Event callback that fires when someone connects to our UART/pty
+ *
+ * @param sock - unused
+ * @param events - unused
+ * @param arg - uart_pty_t that was connected
+ */
+void
+uart_connected_cb(evutil_socket_t sock, short events, void *arg)
+{
+	uart_pty_t *p = (uart_pty_t *)arg;
+
+    df_log_msg(DF_LOG_DEBUG, "UART%c: Checking for connection.\n", p->uart);
+
+    /* Move the PTY into the event base we actually check */
+    bufferevent_base_set(p->base, p->bev);
+
+    /* Enable the read callback */
+    bufferevent_enable(p->bev, EV_READ);
+}
+
 
 static const char * irq_names[IRQ_UART_PTY_COUNT] = {
 	[IRQ_UART_PTY_BYTE_IN] = "8<uart_pty.in",
@@ -211,15 +229,21 @@ static const char * irq_names[IRQ_UART_PTY_COUNT] = {
 };
 
 int
-uart_pty_init(struct avr_t *avr, uart_pty_t *p, char uart)
+uart_pty_init(struct avr_t *avr, uart_pty_t *p, char uart,
+        struct event_base *base)
 {
+    struct bufferevent *bev;
     int m, s;
     struct termios tio;
-    int ret;
+    struct timeval tv;
+
+    if (!dummy_base) {
+        dummy_base = event_base_new();
+    }
 
     /* Clear our structure */
 	memset(p, 0, sizeof(*p));
-    p->port.s = -1;
+    p->fd = -1;
 
     /* Store the 'name' of the UART we are working with */
     p->uart = uart;
@@ -228,7 +252,7 @@ uart_pty_init(struct avr_t *avr, uart_pty_t *p, char uart)
 	p->irq = avr_alloc_irq(&avr->irq_pool, 0, IRQ_UART_PTY_COUNT, irq_names);
 	avr_irq_register_notify(p->irq + IRQ_UART_PTY_BYTE_IN, uart_pty_in_hook, p);
 
-    if (openpty(&m, &s, p->port.slavename, NULL, NULL) < 0) {
+    if (openpty(&m, &s, p->slavename, NULL, NULL) < 0) {
         fprintf(stderr, "Unable to create pty for UART%c: %s\n",
                 p->uart, strerror(errno));
         return -1;
@@ -250,7 +274,7 @@ uart_pty_init(struct avr_t *avr, uart_pty_t *p, char uart)
     }
 
     /* The master is the socket we care about and want to use */
-    p->port.s = m;
+    p->fd = m;
 
     /* We close the slave side so we can watch when someone connects
      * so that we aren't buffering up the bytes before a connection and
@@ -259,12 +283,39 @@ uart_pty_init(struct avr_t *avr, uart_pty_t *p, char uart)
      */
     close(s);
 
-	ret = pthread_create(&p->thread, NULL, uart_pty_thread, p);
-    if (ret) {
-        fprintf(stderr, "Failed to create thread for UART%c IRQ handling: %s\n",
-                p->uart, strerror(ret));
+    /* Make the master side of the TTY non-blocking so we can use libevent */
+    evutil_make_socket_nonblocking(m);
+
+    /* Create our libevent bufferevent */
+    bev = bufferevent_socket_new(base, m, BEV_OPT_CLOSE_ON_FREE);
+    if (!bev) {
+        fprintf(stderr, "Failed to initialize libevent bufferevent for "
+                "UART%c.\n", p->uart);
         goto err;
     }
+    p->bev = bev;
+    p->base = base;
+
+    /* Setup our callbacks */
+    bufferevent_setcb(bev, uart_read_cb, NULL, uart_error_cb, p);
+
+    /* Setup the 4s tick timer to check for a connection */
+    tv.tv_sec = 4;
+    tv.tv_usec = 0;
+
+    p->timer = event_new(p->base, -1, EV_PERSIST, uart_connected_cb, p);
+    if (!p->timer) {
+        fprintf(stderr, "Failed to create timer object for UART%c\n", p->uart);
+        goto err;
+    }
+
+    if (event_add(p->timer, &tv)) {
+        fprintf(stderr, "Failed to queue timer object for UART%c\n", p->uart);
+        goto err;
+    }
+
+   /* Enable the events we are interested in */
+    bufferevent_enable(bev, EV_READ);
 
     return 0;
 
@@ -277,9 +328,7 @@ err:
 void
 uart_pty_stop(uart_pty_t *p, const char *uart_path)
 {
-	void *ret;
     char uart_link[1024];
-    int join_status;
 
     if (p->uart == '\0')
         return;
@@ -295,16 +344,15 @@ uart_pty_stop(uart_pty_t *p, const char *uart_path)
         unlink(uart_path);
     }
 
-	pthread_cancel(p->thread);
+    /* Clean up the is connected checking timer */
+    event_del(p->timer);
+    event_free(p->timer);
 
-    if (p->port.s != -1) {
-        close(p->port.s);
-        p->port.s = -1;
-    }
+    bufferevent_free(p->bev);
 
-	if ((join_status = pthread_join(p->thread, &ret))) {
-        df_log_msg(DF_LOG_ERR, "Shutting down UART%c failed: %s\n",
-                p->uart, strerror(join_status));
+    if (dummy_base) {
+        event_base_free(dummy_base);
+        dummy_base = NULL;
     }
 }
 
@@ -349,9 +397,9 @@ uart_pty_connect(uart_pty_t *p, const char *uart_path)
         /* Unconditionally attempt to remove the old one */
         unlink(uart_link);
 
-        if (symlink(p->port.slavename, uart_link) != 0) {
+        if (symlink(p->slavename, uart_link) != 0) {
             fprintf(stderr, "UART%c: Can't create symlink to %s from %s: %s\n",
-                    p->uart, uart_link, p->port.slavename, strerror(errno));
+                    p->uart, uart_link, p->slavename, strerror(errno));
         } else {
             printf("UART%c available at %s\n", p->uart, uart_link);
         }
@@ -359,9 +407,9 @@ uart_pty_connect(uart_pty_t *p, const char *uart_path)
         /* Unconditionally attempt to remove the old one */
         unlink(uart_path);
 
-        if (symlink(p->port.slavename, uart_path) != 0) {
+        if (symlink(p->slavename, uart_path) != 0) {
             fprintf(stderr, "UART%c: Can't create symlink to %s from %s: %s\n",
-                    p->uart, uart_path, p->port.slavename, strerror(errno));
+                    p->uart, uart_path, p->slavename, strerror(errno));
         } else {
             printf("UART%c available at %s\n", p->uart, uart_path);
         }

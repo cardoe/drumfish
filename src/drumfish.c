@@ -341,7 +341,7 @@ main(int argc, char *argv[])
         exit(EXIT_FAILURE);
     }
 
-    avr = m128rfa1_create(&config);
+    avr = m128rfa1_create(&config, ev_base);
     if (!avr) {
         fprintf(stderr, "Unable to initialize requested board.\n");
         exit(EXIT_FAILURE);

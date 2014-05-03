@@ -22,7 +22,10 @@
 #ifndef __DF_CORES_H__
 #define __DF_CORES_H__
 
+struct drumfish_cfg;
+struct event_base;
+
 /* Cores */
-avr_t *m128rfa1_create(struct drumfish_cfg *config);
+avr_t *m128rfa1_create(struct drumfish_cfg *config, struct event_base *base);
 
 #endif /* __DF_CORES_H__ */

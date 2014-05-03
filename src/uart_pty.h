@@ -25,9 +25,7 @@
 #ifndef __UART_PTY_H___
 #define __UART_PTY_H___
 
-#include <pthread.h>
 #include "sim_irq.h"
-#include "fifo_declare.h"
 
 enum {
 	IRQ_UART_PTY_BYTE_IN = 0,
@@ -35,30 +33,26 @@ enum {
 	IRQ_UART_PTY_COUNT
 };
 
-DECLARE_FIFO(uint8_t, uart_pty_fifo, 512);
+typedef struct df_uart_pty {
+	avr_irq_t   *irq;
+	struct avr_t *avr;
 
-typedef struct uart_pty_port_t {
-	int 		s;			// socket we chat on
-	char 		slavename[64];
-	uart_pty_fifo_t in;
-	uart_pty_fifo_t out;
-	uint8_t		buffer[512];
-	size_t		buffer_len;
-    size_t      buffer_done;
-} uart_pty_port_t;
-
-typedef struct uart_pty_t {
-	avr_irq_t *	irq;		// irq list
-	struct avr_t *avr;		// keep it around so we can pause it
-
-	pthread_t	thread;
-	int			xon;
+	int         xon;
     char        uart;
+    char        slavename[1024];
 
-    uart_pty_port_t port;
+    int         fd;
+    int         peer_connected;
+    struct bufferevent *bev;    /**< buffer for data to and from MCU */
+    struct event_base *base;    /**< base used for connected state */
+    struct event *timer;        /**< timer used to check for connection */
+
 } uart_pty_t;
 
-int uart_pty_init( struct avr_t *avr, uart_pty_t *b, char uart);
+struct event_base;
+
+int uart_pty_init( struct avr_t *avr, uart_pty_t *b, char uart,
+        struct event_base *base);
 
 void uart_pty_stop(uart_pty_t *p, const char *uart_path);
 
