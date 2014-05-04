@@ -275,7 +275,7 @@ err:
 }
 
 void
-uart_pty_stop(uart_pty_t *p)
+uart_pty_stop(uart_pty_t *p, const char *uart_path)
 {
 	void *ret;
     char uart_link[1024];
@@ -286,10 +286,14 @@ uart_pty_stop(uart_pty_t *p)
 
     df_log_msg(DF_LOG_INFO, "Shutting down UART%c\n", p->uart);
 
-    /* Remove our symlink, but don't care if its already gone */
-    snprintf(uart_link, sizeof(uart_link), "/tmp/drumfish-%d-uart%c",
-            getpid(), p->uart);
-    unlink(uart_link);
+    if (strcmp(uart_path, "on") == 0) {
+        /* Remove our symlink, but don't care if its already gone */
+        snprintf(uart_link, sizeof(uart_link), "/tmp/drumfish-%d-uart%c",
+                getpid(), p->uart);
+        unlink(uart_link);
+    } else {
+        unlink(uart_path);
+    }
 
 	pthread_cancel(p->thread);
 
@@ -305,7 +309,7 @@ uart_pty_stop(uart_pty_t *p)
 }
 
 void
-uart_pty_connect(uart_pty_t *p)
+uart_pty_connect(uart_pty_t *p, const char *uart_path)
 {
 	uint32_t f = 0;
     avr_irq_t *src, *dst, *xon, *xoff;
@@ -339,16 +343,28 @@ uart_pty_connect(uart_pty_t *p)
 		avr_irq_register_notify(xoff, uart_pty_xoff_hook, p);
 
     /* Build the symlink path for the UART */
-    snprintf(uart_link, sizeof(uart_link), "/tmp/drumfish-%d-uart%c",
-            getpid(), p->uart);
-    /* Unconditionally attempt to remove the old one */
-    unlink(uart_link);
+    if (strcmp(uart_path, "on") == 0) {
+        snprintf(uart_link, sizeof(uart_link), "/tmp/drumfish-%d-uart%c",
+                getpid(), p->uart);
+        /* Unconditionally attempt to remove the old one */
+        unlink(uart_link);
 
-    if (symlink(p->port.slavename, uart_link) != 0) {
-        fprintf(stderr, "UART%c: Can't create symlink to %s from %s: %s",
-                p->uart, uart_link, p->port.slavename, strerror(errno));
+        if (symlink(p->port.slavename, uart_link) != 0) {
+            fprintf(stderr, "UART%c: Can't create symlink to %s from %s: %s\n",
+                    p->uart, uart_link, p->port.slavename, strerror(errno));
+        } else {
+            printf("UART%c available at %s\n", p->uart, uart_link);
+        }
     } else {
-        printf("UART%c available at %s\n", p->uart, uart_link);
+        /* Unconditionally attempt to remove the old one */
+        unlink(uart_path);
+
+        if (symlink(p->port.slavename, uart_path) != 0) {
+            fprintf(stderr, "UART%c: Can't create symlink to %s from %s: %s\n",
+                    p->uart, uart_path, p->port.slavename, strerror(errno));
+        } else {
+            printf("UART%c available at %s\n", p->uart, uart_path);
+        }
     }
 }
 

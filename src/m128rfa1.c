@@ -52,10 +52,10 @@ m128rfa1_init(avr_t *avr, void *data)
 static void
 m128rfa1_deinit(avr_t *avr, void *data)
 {
-    (void)data;
+    struct drumfish_cfg *config = (struct drumfish_cfg *)data;
 
-    uart_pty_stop(&uart_pty[0]);
-    uart_pty_stop(&uart_pty[1]);
+    uart_pty_stop(&uart_pty[0], config->peripherals[DF_PERIPHERAL_UART0]);
+    uart_pty_stop(&uart_pty[1], config->peripherals[DF_PERIPHERAL_UART1]);
 
     flash_close(avr->flash, avr->flashend + 1);
     avr->flash = NULL;
@@ -108,7 +108,8 @@ m128rfa1_create(struct drumfish_cfg *config)
             fprintf(stderr, "Unable to start UART0.\n");
             return NULL;
         }
-        uart_pty_connect(&uart_pty[0]);
+        uart_pty_connect(&uart_pty[0],
+                config->peripherals[DF_PERIPHERAL_UART0]);
     }
 
     if (strcmp(config->peripherals[DF_PERIPHERAL_UART1], "off")) {
@@ -117,7 +118,8 @@ m128rfa1_create(struct drumfish_cfg *config)
             fprintf(stderr, "Unable to start UART1.\n");
             return NULL;
         }
-        uart_pty_connect(&uart_pty[1]);
+        uart_pty_connect(&uart_pty[1],
+                config->peripherals[DF_PERIPHERAL_UART1]);
     }
 
     return avr;

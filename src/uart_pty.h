@@ -60,8 +60,8 @@ typedef struct uart_pty_t {
 
 int uart_pty_init( struct avr_t *avr, uart_pty_t *b, char uart);
 
-void uart_pty_stop(uart_pty_t *p);
+void uart_pty_stop(uart_pty_t *p, const char *uart_path);
 
-void uart_pty_connect(uart_pty_t *p);
+void uart_pty_connect(uart_pty_t *p, const char *uart_path);
 
 #endif /* __UART_PTY_H___ */
