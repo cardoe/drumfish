@@ -1,7 +1,9 @@
 language: c
 
-script: make
+script: make && make test
+
+cache: apt
 
 before_install:
  -  sudo apt-get update -qq
- -  sudo apt-get install -qq avr-libc libelf-dev
+ -  sudo apt-get install -qq avr-libc libelf-dev python-serial

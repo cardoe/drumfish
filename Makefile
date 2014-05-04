@@ -7,3 +7,7 @@ all:
 clean:
 	$(MAKE) -C simavr clean
 	$(MAKE) -C src clean
+
+.PHONY: test
+test:
+	$(MAKE) -C tests test
