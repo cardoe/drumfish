@@ -23,6 +23,13 @@
 #ifndef __DRUMFISH_H__
 #define __DRUMFISH_H__
 
+enum df_peripherals {
+    DF_PERIPHERAL_UART0,
+    DF_PERIPHERAL_UART1,
+
+    DF_PERIPHERAL_MAX /**< must always be the last value */
+};
+
 struct drumfish_cfg {
     char *mac;
     char *pflash;
@@ -30,6 +37,7 @@ struct drumfish_cfg {
     int verbose;
     short gdb;
     int erase_pflash;
+    char *peripherals[DF_PERIPHERAL_MAX];
 };
 
 #endif /* __DRUMFISH_H__ */

@@ -47,6 +47,58 @@
  */
 avr_t *avr = NULL;
 
+static const char * const df_peripheral_str[] = {
+    "uart0",
+    "uart1",
+    NULL
+};
+
+static void
+df_peripheral_parse(struct drumfish_cfg *config, const char *arg)
+{
+    int i;
+    char *peripheral_name;
+    char *peripheral_path;
+
+    /* dup the string to mod it */
+    peripheral_name = strdup(arg);
+    if (!peripheral_name) {
+        fprintf(stderr, "Unable to allocate memory.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    /* Find the = */
+    peripheral_path = strchr(peripheral_name, '=');
+    if (!peripheral_path) {
+        fprintf(stderr, "Invalid peripheral configuration provided: '%s'.\n",
+                arg);
+        exit(EXIT_FAILURE);
+    }
+
+    /* Replace the = with a NULL */
+    *peripheral_path = '\0';
+    peripheral_path++;
+
+    for (i = 0; i < DF_PERIPHERAL_MAX; i++) {
+        if (strcmp(df_peripheral_str[i], peripheral_name) == 0) {
+            free(config->peripherals[i]);
+            config->peripherals[i] = strdup(peripheral_path);
+            break;
+        }
+    }
+
+    if (i == DF_PERIPHERAL_MAX) {
+        fprintf(stderr, "Invalid peripheral name supplied '%s'\n",
+                peripheral_name);
+        exit(EXIT_FAILURE);
+    }
+
+    free(peripheral_name);
+
+    return;
+}
+
+
 static void
 handler(int sig)
 {
@@ -67,17 +119,32 @@ static void
 usage(const char *argv0)
 {
     fprintf(stderr,
-"Usage: %s [-v] [-p pflash] [-f firmware.hex] [-g port] [-m MAC]\n"
+"Usage: %s [-v] [-s pflash] [-f firmware.hex] [-g port] [-m MAC] [-p config]\n"
 "\n"
-"  -p pflash    - Path to device's progammable flash storage\n"
+"  -s pflash    - Path to device's progammable flash storage\n"
 "  -f ihex      - Load the requested 'ihex' file into the device's flash\n"
 "  -e           - Erase all of progammable flash prior to loading any data\n"
+"  -p config    - Configures a peripheral\n"
 "  -g port      - Runs the AVR CPU under gdbserver on 'port'\n"
 "  -v           - Increase verbosity of messages\n"
 "  -m           - Radio MAC address\n"
 "\n"
+"Peripheral Config:\n"
+"  Specifies a peripheral name and a value in the form of 'name=value'\n"
+"\n"
+"  Valid peripherals:\n"
+"    uart0\n"
+"    uart1\n"
+"      Value can be either a valid path or 'off' or 'on'. Should 'off' be\n"
+"      specified then there will be no ability to communicate with this\n"
+"      peripheral but the MCU can still have it enabled. Should 'on' be\n"
+"      specified then the default path of /tmp/drumfish-$PID-uartX will\n"
+"      be used.\n"
+"\n"
 "Defaults:\n"
 "  Programmable Flash Storage: $HOME/.drumfish/pflash.dat\n"
+"  UART0: off\n"
+"  UART1: /tmp/drumfish-$PID-uart1\n"
 "\n"
 "Examples:\n"
 "  %s -g 1234 -m 00:11:22:00:9E:35\n"
@@ -110,8 +177,10 @@ main(int argc, char *argv[])
     config.verbose = 0;
     config.gdb = 0;
     config.erase_pflash = 0;
+    config.peripherals[DF_PERIPHERAL_UART0] = strdup("off");
+    config.peripherals[DF_PERIPHERAL_UART1] = strdup("on");
 
-    while ((opt = getopt(argc, argv, "ef:p:m:vg:h")) != -1) {
+    while ((opt = getopt(argc, argv, "ef:p:m:vg:s:h")) != -1) {
         switch (opt) {
             case 'e':
                 config.erase_pflash = 1;
@@ -146,7 +215,8 @@ main(int argc, char *argv[])
                     exit(EXIT_FAILURE);
                 }
                 break;
-            case 'p':
+            case 's':
+                /* path to storage for flash */
                 config.pflash = strdup(optarg);
                 if (!config.pflash) {
                     fprintf(stderr, "Failed to allocate memory for "
@@ -180,6 +250,10 @@ main(int argc, char *argv[])
                }
 
                config.gdb = port;
+               break;
+            case 'p':
+               /* store requested port (UART) path */
+               df_peripheral_parse(&config, optarg);
                break;
             case 'V':
                /* print version */
