@@ -281,6 +281,9 @@ uart_pty_stop(uart_pty_t *p)
     char uart_link[1024];
     int join_status;
 
+    if (p->uart == '\0')
+        return;
+
     df_log_msg(DF_LOG_INFO, "Shutting down UART%c\n", p->uart);
 
     /* Remove our symlink, but don't care if its already gone */
