@@ -162,6 +162,7 @@ int
 main(int argc, char *argv[])
 {
     const char *argv0 = argv[0];
+    int exit_state = EXIT_FAILURE;
     char *env;
     struct drumfish_cfg config;
     struct sigaction act;
@@ -351,11 +352,21 @@ main(int argc, char *argv[])
     /* Our main event loop */
     for (;;) {
         state = avr_run(avr);
-        if (state == cpu_Done || state == cpu_Crashed)
+
+        if (state == cpu_Done) {
+            exit_state = EXIT_SUCCESS;
             break;
+        } else if (state == cpu_Crashed) {
+            df_log_msg(DF_LOG_WARN, "CPU crashed at %#x\n", avr->pc);
+            break;
+        }
     }
 
     avr_terminate(avr);
 
+    df_log_msg(DF_LOG_INFO, "Terminated.\n");
+
     free(config.pflash);
+
+    return exit_state;
 }
