@@ -357,8 +357,12 @@ main(int argc, char *argv[])
             exit_state = EXIT_SUCCESS;
             break;
         } else if (state == cpu_Crashed) {
-            df_log_msg(DF_LOG_WARN, "CPU crashed at %#x\n", avr->pc);
-            break;
+            /* many firmwares disable interrupts and enable the watchdog
+             * to cause the MCU to reboot. simavr treats that state as
+             * cpu_Crashed
+             */
+            df_log_msg(DF_LOG_INFO, "CPU rebooted\n");
+            avr_reset(avr);
         }
     }
 
